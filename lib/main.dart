@@ -219,6 +219,7 @@ class _MyHomePageState extends State<MyHomePage> {
                     child: Container(
                       color: Colors.white,
                       child: PrettyQrView.data(
+                        key: ValueKey(_qrPayload),
                         data: _qrPayload,
                         errorCorrectLevel: QrErrorCorrectLevel.H,
                         decoration: _kQrDecoration,

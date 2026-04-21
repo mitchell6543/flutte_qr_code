@@ -1,15 +1,38 @@
+import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
-import 'dart:ui' show ImageByteFormat;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:gal/gal.dart';
 
 import 'download_png.dart';
 import 'package:pretty_qr_code/pretty_qr_code.dart';
 import 'package:share_plus/share_plus.dart' show ShareParams, SharePlus, XFile;
+
+/// Shared with [PrettyQrView.data] and [QrImage.toImageAsBytes].
+const PrettyQrDecoration _kQrDecoration = PrettyQrDecoration(
+  image: PrettyQrDecorationImage(
+    image: AssetImage('assets/app-icon-rounded.png'),
+    padding: EdgeInsets.all(4),
+    filterQuality: FilterQuality.high,
+    isAntiAlias: true,
+  ),
+  shape: PrettyQrSmoothSymbol(
+    color: PrettyQrBrush.gradient(
+      gradient: LinearGradient(
+        colors: [
+          Color(0xFF6A41F6),
+          Color(0xFFA032E9),
+        ],
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+      ),
+    ),
+  ),
+  background: Colors.white,
+  quietZone: PrettyQrQuietZone.pixels(16),
+);
 
 void main() {
   runApp(const MyApp());
@@ -38,48 +61,79 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  final GlobalKey _qrKey = GlobalKey();
   final TextEditingController _urlController = TextEditingController(
-    text: 'https://www.google.com',
+    text: 'https://apps.apple.com/hk/iphone/search?term=travel%20jumbo&pt=edm&ct=email&mt=launch_promo',
   );
   bool _saving = false;
 
-  String get _qrData {
-    final t = _urlController.text.trim();
+  /// Payload for [PrettyQrView]; updated on a short debounce so [QrImage] is not
+  /// rebuilt on every keystroke (see pretty_qr_code: avoid encoding in build).
+  late String _qrPayload;
+  Timer? _qrDebounce;
+
+  static String _payloadForText(String raw) {
+    final t = raw.trim();
     return t.isEmpty ? 'https://www.google.com' : t;
   }
 
   @override
   void initState() {
     super.initState();
-    _urlController.addListener(_onUrlChanged);
+    _qrPayload = _payloadForText(_urlController.text);
+    _urlController.addListener(_onUrlTextChanged);
   }
 
-  void _onUrlChanged() => setState(() {});
+  void _onUrlTextChanged() {
+    _qrDebounce?.cancel();
+    _qrDebounce = Timer(const Duration(milliseconds: 200), () {
+      if (!mounted) return;
+      final next = _payloadForText(_urlController.text);
+      if (next != _qrPayload) {
+        setState(() => _qrPayload = next);
+      }
+    });
+  }
+
+  /// Applies the latest field text to [_qrPayload] immediately (e.g. before save).
+  void _syncQrPayloadToField() {
+    _qrDebounce?.cancel();
+    final next = _payloadForText(_urlController.text);
+    if (next != _qrPayload) {
+      setState(() => _qrPayload = next);
+    }
+  }
 
   @override
   void dispose() {
-    _urlController.removeListener(_onUrlChanged);
+    _qrDebounce?.cancel();
+    _urlController.removeListener(_onUrlTextChanged);
     _urlController.dispose();
     super.dispose();
   }
 
-  Future<Uint8List?> _captureQrPng() async {
-    final dpr = MediaQuery.devicePixelRatioOf(context);
-    await Future<void>.delayed(Duration.zero);
-    if (!context.mounted) return null;
-    final boundary =
-        _qrKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
-    if (boundary == null) return null;
-    final image = await boundary.toImage(pixelRatio: dpr);
-    final byteData = await image.toByteData(format: ImageByteFormat.png);
+  Future<Uint8List?> _encodeQrPngBytes() async {
+    if (!mounted) return null;
+    final qrCode = QrCode.fromData(
+      data: _qrPayload,
+      errorCorrectLevel: QrErrorCorrectLevel.H,
+    );
+    final qrImage = QrImage(qrCode);
+    final configuration = createLocalImageConfiguration(context);
+    final byteData = await qrImage.toImageAsBytes(
+      size: 512,
+      decoration: _kQrDecoration,
+      configuration: configuration,
+    );
     return byteData?.buffer.asUint8List();
   }
 
   Future<void> _saveQrImage() async {
+    _syncQrPayloadToField();
     setState(() => _saving = true);
     try {
-      final bytes = await _captureQrPng();
+      await Future<void>.delayed(Duration.zero);
+      if (!mounted) return;
+      final bytes = await _encodeQrPngBytes();
       if (!mounted) return;
       if (bytes == null) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -160,38 +214,14 @@ class _MyHomePageState extends State<MyHomePage> {
               child: Center(
                 child: SizedBox(
                   width: min(280, MediaQuery.of(context).size.width * 0.80),
-                  child: RepaintBoundary(
-                    key: _qrKey,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(16),
-                      child: Container(
-                        color: Colors.white,
-                        child: PrettyQrView.data(
-                          key: ValueKey(_qrData),
-                          data: _qrData,
-                          decoration: const PrettyQrDecoration(
-                            image: PrettyQrDecorationImage(
-                              image: AssetImage(
-                                'assets/app-icon-rounded.png',
-                              ),
-                              scale: 0.2,
-                            ),
-                            shape: PrettyQrSmoothSymbol(
-                              color: PrettyQrBrush.gradient(
-                                gradient: LinearGradient(
-                                  colors: [
-                                    Color(0xFF6A41F6),
-                                    Color(0xFFA032E9),
-                                  ],
-                                  begin: Alignment.topCenter,
-                                  end: Alignment.bottomCenter,
-                                ),
-                              ),
-                            ),
-                            background: Colors.white,
-                            quietZone: PrettyQrQuietZone.pixels(18),
-                          ),
-                        ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: Container(
+                      color: Colors.white,
+                      child: PrettyQrView.data(
+                        data: _qrPayload,
+                        errorCorrectLevel: QrErrorCorrectLevel.H,
+                        decoration: _kQrDecoration,
                       ),
                     ),
                   ),
